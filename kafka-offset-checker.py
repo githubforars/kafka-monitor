@@ -40,7 +40,7 @@ def fetch_consumer_lag(client, topic, consumer_group):
       consumer = topic.get_simple_consumer(consumer_group=consumer_group,
                                          auto_start=False)
       current_offsets = consumer.fetch_offsets()
-      return {p_id: (latest_offsets[p_id].offset[0], res.offset)
+      return {p_id: (latest_offsets[p_id].offset[0], res.offset if res.offset != -1 else latest_offsets[p_id].offset[0])
             for p_id, res in current_offsets}
     except AttributeError:
       pass
@@ -50,44 +50,39 @@ def get_consumer_lag(client, topic, consumer_group):
     try:
       lag_info = fetch_consumer_lag(client, topic, consumer_group)
       for k,v in iteritems(lag_info):
-         print('server.'+stringsub(hostname)+'.kafka.'+stringsub(topic.name)+'.'+str(k),v[0]-v[1])
-      #   graphite_update('servers.'+stringsub(hostname)+'.kafka.'+stringsub(topic.name)+'.'+str(k),v[0]-v[1])
+        graphite_update('servers.'+stringsub(hostname)+'.kafka.'+stringsub(topic.name)+'.'+str(k),v[0]-v[1])
+        print('server.'+stringsub(hostname)+'.kafka.'+stringsub(topic.name)+'.'+str(k),v[0]-v[1],consumer_group)
     except AttributeError:
       pass
-
 
 def get_consumer_groups_offsets(client):
       consumer_groups = {}
       brokers = client.brokers
       obj_topics = client.topics
       disconnected_topic = []
-      excluded_group = ['__consumer_offsets']
+      groups=[]
+      topics=[]
+      active_topics=[]
+      excluded_group = ['__consumer_offsets','KafkaManagerOffsetCache']
       for broker_id, broker in brokers.iteritems():
-        groups = broker.list_groups().groups.keys()
+        groups= broker.list_groups().groups.keys()
         groups_metadata = broker.describe_groups(group_ids=groups).groups
-      for group_id, describe_group_response in groups_metadata.iteritems():
-         members = describe_group_response.members
-         for member_id, member in members.iteritems():
+        for group_id, describe_group_response in groups_metadata.iteritems():
+          if group_id not in excluded_group:
+            members = describe_group_response.members
+          for member_id, member in members.iteritems():
                 topics = member.member_metadata.topic_names
-                try:
-                  if group_id in consumer_groups[topics[0]]:
-                    pass
+                for topic in topics:
+                  if topic in active_topics:
+                     pass
                   else:
-                    consumer_groups[topics[0]].append(group_id)
-                except KeyError:
-                  consumer_groups[topics[0]] = [group_id]
+                    active_topics.extend(topics)
+                    get_consumer_lag(client, obj_topics[topic], group_id)
       for topic in client.topics:
-                if topic not in consumer_groups:
-                    if topic not in excluded_group:
-                         disconnected_topic.append(topic)
-                         pass
-                    else:
-                         pass
-                    pass
-                else:
-                    topics = obj_topics[topic]
-                    #print(topic,consumer_groups[topic])
-                    get_consumer_lag(client, topics, consumer_groups[topic][0])
+             if topic not in active_topics:
+                 disconnected_topic.append(topic)
+             else:
+                 pass
       if disconnected_topic:
          print('Topics does not have consumer attached;\n{}'.format(disconnected_topic))
          sys.exit(2)
